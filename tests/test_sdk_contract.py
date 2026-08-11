@@ -296,3 +296,67 @@ def test_patch_repairs_the_defect_when_present():
     _corrected_update(probe)
     assert probe.started, "the corrected update() never started a query"
     assert probe._last_call > 0, "the corrected update() never stamped the clock"
+
+
+# -- estop tool -------------------------------------------------------------
+#
+# scripts/estop.py is a recovery tool, so it must not be the thing that fails
+# when you reach for it. Its first draft read `status.StopLevel`, which does not
+# exist -- EstopStopLevel is a module-level enum, not nested on the message --
+# and would have raised AttributeError on a stranded robot.
+
+
+def _estop_tool():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "estop.py"
+    spec = importlib.util.spec_from_file_location("estop_tool", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_estop_tool_formats_a_populated_status():
+    from bosdyn.api import estop_pb2
+
+    tool = _estop_tool()
+    status = estop_pb2.EstopSystemStatus(stop_level=estop_pb2.ESTOP_LEVEL_CUT)
+    entry = status.endpoints.add()
+    entry.endpoint.role = "PDB_rooted"
+    entry.endpoint.name = "GNClient"
+    entry.stop_level = estop_pb2.ESTOP_LEVEL_CUT
+    entry.time_since_valid_response.seconds = 42
+    tool.describe_status(status)  # must not raise
+
+
+def test_estop_tool_formats_a_populated_config():
+    from bosdyn.api import estop_pb2
+
+    tool = _estop_tool()
+    config = estop_pb2.EstopConfig(unique_id="abc")
+    endpoint = config.endpoints.add()
+    endpoint.role = "PDB_rooted"
+    endpoint.name = "GNClient"
+    endpoint.timeout.seconds = 9
+    tool.describe_config(config)
+
+
+def test_estop_tool_handles_an_empty_config():
+    from bosdyn.api import estop_pb2
+
+    tool = _estop_tool()
+    tool.describe_config(estop_pb2.EstopConfig())
+    tool.describe_status(estop_pb2.EstopSystemStatus())
+
+
+@pytest.mark.parametrize(
+    "level",
+    ["ESTOP_LEVEL_UNKNOWN", "ESTOP_LEVEL_CUT", "ESTOP_LEVEL_SETTLE_THEN_CUT", "ESTOP_LEVEL_NONE"],
+)
+def test_every_stop_level_has_a_name(level):
+    """Guards the enum lookup the tool does on every line it prints."""
+    from bosdyn.api import estop_pb2
+
+    value = getattr(estop_pb2, level)
+    assert estop_pb2.EstopStopLevel.Name(value) == level
