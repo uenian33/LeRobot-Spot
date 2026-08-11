@@ -93,6 +93,72 @@ class FakeScreen:
         self.keys.extend([ord(char)] * times)
 
 
+class FakeStateTask:
+    """Replaces AsyncRobotState.
+
+    The real `AsyncPeriodicQuery.proto` is a read-only property, so tests cannot
+    assign to it; swapping the whole task out works against both SDKs.
+    """
+
+    def __init__(self, proto):
+        self.proto = proto
+
+    def update(self):
+        pass
+
+
+def set_state(interface, **kwargs):
+    """Install a fresh fake robot state on the interface."""
+    interface.spot._state_task = FakeStateTask(fake_state(**kwargs))
+
+
+class FakeLeaseKeepAlive:
+    """Stands in for the real one, which would start a keep-alive RPC thread."""
+
+    def __init__(self, *args, **kwargs):
+        self._alive = True
+
+    def is_alive(self):
+        return self._alive
+
+    def shutdown(self):
+        self._alive = False
+
+
+class FakeEstopEndpoint:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def force_simple_setup(self):
+        pass
+
+
+class FakeEstopKeepAlive:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def stop(self):
+        pass
+
+    def shutdown(self):
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _no_real_lease_or_estop(monkeypatch):
+    """Keep lease/E-Stop inert so these tests run against the real SDK too.
+
+    Only the session-management classes are replaced. The command *builders*
+    stay real, so when the genuine Spot SDK is installed these tests exercise
+    real protobuf construction rather than the stub's stand-ins.
+    """
+    import lerobot_spot.spot_arm as spot_arm
+
+    monkeypatch.setattr(spot_arm, "LeaseKeepAlive", FakeLeaseKeepAlive)
+    monkeypatch.setattr(spot_arm, "EstopEndpoint", FakeEstopEndpoint)
+    monkeypatch.setattr(spot_arm, "EstopKeepAlive", FakeEstopKeepAlive)
+
+
 def make_interface(*argv):
     options = build_parser().parse_args(["1.2.3.4", "--simulated-leader", *argv])
     config = RetargetConfig()
@@ -100,7 +166,7 @@ def make_interface(*argv):
     robot = FakeRobot()
     interface = TeleopInterface(robot, SimulatedLeader(), config, options)
     interface.start()
-    interface.spot._state_task.proto = fake_state()
+    set_state(interface)
     interface.sent = robot.command_client.sent
     return interface
 
@@ -221,13 +287,13 @@ def test_draw_does_not_raise(interface):
 def test_disengages_when_motors_power_off(interface):
     interface.dry_run = False  # the power check is deliberately skipped in dry-run
     assert interface.engage()
-    interface.spot._state_task.proto = fake_state(power=MOTOR_POWER_OFF)
+    set_state(interface, power=MOTOR_POWER_OFF)
     interface._control_step(DT)
     assert not interface.engaged
 
 
 def test_power_state_is_ignored_in_dry_run(interface):
-    interface.spot._state_task.proto = fake_state(power=MOTOR_POWER_OFF)
+    set_state(interface, power=MOTOR_POWER_OFF)
     assert interface.engage()
     interface._control_step(DT)
     assert interface.engaged
@@ -361,12 +427,23 @@ def test_gripper_toggle(interface):
     assert not interface.gripper_enabled
 
 
+def sent_a_stop(interface) -> bool:
+    """True if a stop command was issued, under either the real SDK or the stub."""
+    for command in interface.sent:
+        if command == "stop":  # tests/fake_bosdyn
+            return True
+        full_body = getattr(command, "full_body_command", None)
+        if full_body is not None and full_body.HasField("stop_request"):
+            return True
+    return False
+
+
 def test_panic_stop_disengages_and_stops(interface):
     interface.engage()
     interface._panic_stop()
     assert not interface.engaged
     # ESC must reach the robot even in dry-run: it is the operator's stop button.
-    assert "stop" in interface.sent
+    assert sent_a_stop(interface)
 
 
 def test_dry_run_sends_no_arm_commands(interface):

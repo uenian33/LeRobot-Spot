@@ -55,6 +55,25 @@ joint that runs backwards here will run backwards on the robot.** Fix it by
 copying `configs/so101_to_spot.example.json`, flipping that joint's `sign`, and
 passing `--config`.
 
+## Step 0.5 — before the robot has ever moved
+
+Two things are worth doing in this order, because together they remove the
+biggest unknown at zero risk.
+
+**Check the servos.** `probe_leader.py` is read-only and works before any
+calibration exists — it pings all six servos and streams raw encoder counts:
+
+```bash
+python scripts/probe_leader.py --port /dev/tty.usbmodem59700725491
+```
+
+**Establish the sign conventions without commanding anything.** Connect to the
+real robot in `--dry-run`, which reads live state and computes targets but never
+sends an arm command. Drive the arm *from the tablet* and watch the `spot (deg)`
+row to learn which way each Spot joint counts. Then move the leader and watch the
+`target` row. Comparing the two settles every sign with the motors never taking
+an order. Fix mismatches by flipping `sign` in a config.
+
 ## Step 1 — run it
 
 ```bash
@@ -71,6 +90,25 @@ have been commanded. Watch it for a minute before dropping the flag.
 
 Credentials come from the Spot SDK's usual `BOSDYN_CLIENT_USERNAME` /
 `BOSDYN_CLIENT_PASSWORD` environment variables, or it prompts.
+
+## First contact with a powered arm
+
+Spot sitting, arm unstowed, open space, **hardware E-Stop in your hand**. Take
+one joint at a time:
+
+```bash
+python -m lerobot_spot.teleop $SPOT_IP --leader-port /dev/tty.usbmodem59700725491 \
+    --leader-id spot_leader --config configs/first_contact.json --only-joint sh0
+```
+
+`--only-joint` freezes every other joint, so a sign error can only move the one
+you are watching. `configs/first_contact.json` uses gain 0.2 (90° of leader
+travel gives 18° of Spot), `max_joint_vel` 0.35 rad/s and a 3° deadband, so a
+mistake is a slow drift rather than a swing. Walk `sh0 → sh1 → el0 → wr0 → wr1`,
+then drop `--only-joint` and raise the gain with `]` until it feels right.
+
+Velocity mode is a different command path, so re-earn trust from this step before
+trusting it.
 
 ## Startup: both arms begin stowed
 
@@ -359,15 +397,33 @@ then write the number into the config.
 python -m pytest tests/ -q
 ```
 
-153 tests, no robot and no leader arm required. The retargeting and hand-guiding
-tests are pure maths — `test_handguide.py` pins the safety properties directly
-(engaging never moves the arm, releasing stops the setpoint, the leash bounds the
-spring force) and runs against the real SDK too. The teleop and collect tests
-drive their state machines — engage gating, the watchdogs, the home-anchor
-alignment gate, and the shape of the commands that reach the wire — against
-`tests/fake_bosdyn/`, a stub used only when the real SDK is absent. Those two
-modules skip when the real SDK is installed, because their fake robot handle is
-not one the real lease client accepts.
+No robot and no leader arm required. 153 pass with only the stub installed; 150
+pass against the real Spot SDK (the difference is tests that assert on the
+stub's own command shapes, which skip when the real SDK is present).
+
+The retargeting and hand-guiding tests are pure maths — `test_handguide.py` pins
+the safety properties directly (engaging never moves the arm, releasing stops the
+setpoint, the leash bounds the spring force). The teleop and collect tests drive
+their state machines: engage gating, the watchdogs, the home-anchor alignment
+gate, and the commands that reach the wire.
+
+`test_sdk_contract.py` is the important one. Every other test can pass while the
+code is wrong, because `tests/fake_bosdyn/` encodes the same beliefs about the
+Spot API that the production code does — if a belief is mistaken, the stub is
+mistaken identically and the suite stays green. The contract tests break that
+circularity: they are skipped unless the genuine `bosdyn` package is installed,
+and they inspect the real protobuf messages the builders emit. They still need no
+robot and open no connection.
+
+They check that joint order reaches the proto unpermuted, that `max_vel`/`max_acc`
+are really applied, that folding the gripper in does not drop the arm sub-command
+in either control mode, that `open_fraction` 0 is closed and 1 is open, that a
+zero twist is genuinely all-zero, and that our joint limits never exceed Boston
+Dynamics' published URDF. That last check earned its keep: it caught five limits
+that had been rounded *outward* past the hard stops.
+
+**Re-run this against the SDK version your robot actually runs, and after every
+SDK upgrade.** A failure means a command would have been malformed on the wire.
 
 ## Layout
 
@@ -381,9 +437,11 @@ lerobot_spot/
   teleop.py     leader-driven control loop, curses UI, CLI
   collect.py    hand-guided control loop, curses UI, CLI
 scripts/
+  probe_leader.py   pings the servos, streams raw counts, needs no calibration
   check_leader.py   leader-only sanity check, no robot
 configs/
   so101_to_spot.example.json
+  first_contact.json          timid profile for the first powered run
 ```
 
 ## Known gaps

@@ -558,6 +558,13 @@ def build_parser() -> argparse.ArgumentParser:
         "(never jumps, re-indexable). 'home': anchor on a captured pose pair -- normally taken "
         "with both arms stowed -- so leader pose maps to a fixed Spot pose all session.",
     )
+    control_group.add_argument(
+        "--only-joint",
+        choices=SPOT_JOINTS,
+        help="Drive just this one Spot joint and freeze the rest. Use it to verify one "
+        "joint's direction at a time on first contact: a sign error can then only move "
+        "the joint you are watching.",
+    )
     control_group.add_argument("--rate", type=float, default=30.0, help="Control loop rate, Hz")
     control_group.add_argument("--config", type=Path, help="JSON file overriding the retargeting map")
     control_group.add_argument(
@@ -607,6 +614,20 @@ def main() -> bool:
     config = RetargetConfig.from_json(options.config) if options.config else RetargetConfig()
     config.validate()
     config.max_joint_vel = options.max_joint_vel
+
+    if options.only_joint:
+        config.joint_map = {
+            name: link for name, link in config.joint_map.items() if link.spot == options.only_joint
+        }
+        config.twist_map = {}
+        if not config.joint_map:
+            print(
+                f"error: no leader joint drives '{options.only_joint}' in this map",
+                file=sys.stderr,
+            )
+            return False
+        driver = next(iter(config.joint_map))
+        print(f"Restricted to {options.only_joint}, driven by the leader's {driver}.")
 
     try:
         robot = connect_robot(options.hostname, options.time_sync_interval_sec)

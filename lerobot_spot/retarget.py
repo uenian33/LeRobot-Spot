@@ -48,14 +48,17 @@ DEG2RAD = math.pi / 180.0
 # Spot arm joints, in the order `arm_joint_move_helper` expects them.
 SPOT_JOINTS = ("sh0", "sh1", "el0", "el1", "wr0", "wr1")
 
-# Range of motion in radians, from Boston Dynamics' published Spot arm model.
+# Range of motion in radians, verbatim from Boston Dynamics' published URDF
+# (spot_description/urdf/spot_arm_macro.urdf). Full precision on purpose: these
+# are hard stops, and rounding them outward -- even by a microradian -- widens
+# the range the clamp below permits. `tests/test_sdk_contract.py` pins them.
 SPOT_JOINT_LIMITS = {
-    "sh0": (-2.61799, 3.14159),
-    "sh1": (-3.14159, 0.523599),
-    "el0": (0.0, 3.14159),
-    "el1": (-2.79253, 2.79253),
-    "wr0": (-1.8326, 1.8326),
-    "wr1": (-2.87979, 2.87979),
+    "sh0": (-2.61799387799149441136, 3.14159265358979311599),
+    "sh1": (-3.14159265358979311599, 0.52359877559829881566),
+    "el0": (0.0, 3.14159265358979311599),
+    "el1": (-2.79252680319092716487, 2.79252680319092716487),
+    "wr0": (-1.83259571459404613236, 1.83259571459404613236),
+    "wr1": (-2.87979326579064354163, 2.87979326579064354163),
 }
 
 # Hand twist axes. The linear three are normalized to [-1, 1] and are expressed
