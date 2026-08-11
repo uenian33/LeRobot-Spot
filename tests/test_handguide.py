@@ -343,7 +343,7 @@ def test_box_is_enforced_in_the_body_frame_not_the_task_frame():
 # -- payload bias -----------------------------------------------------------
 
 
-def test_capture_bias_cancels_a_steady_payload_pull():
+def test_capture_bias_hands_a_payload_to_the_arm_as_feed_forward():
     """A hanging payload reads as a permanent push until it is zeroed out."""
     cfg = config(linear_stiffness=100.0, force_deadband=1.0, linear_admittance=0.01)
     controller = AdmittanceHandGuide(cfg)
@@ -351,14 +351,47 @@ def test_capture_bias_cancels_a_steady_payload_pull():
 
     payload = deflection_pose(position=(0.0, 0.0, -0.05))  # 5 N down at 100 N/m
     drifting = controller.step(payload, dt=0.03)
-    assert drifting.twist[2] < 0.0  # the arm is sinking
+    assert drifting.twist[2] < 0.0  # the arm is sinking under the load
 
     controller.capture_bias(drifting.operator_wrench)
-    held = controller.step(payload, dt=0.03)
-    assert np.allclose(held.twist, np.zeros(6), atol=1e-12)
-    # And the payload weight is handed to the arm as a feed-forward, so the
-    # spring no longer has to hold it through a standing deflection.
     assert controller.feed_forward[2] == pytest.approx(5.0, abs=1e-9)
+    # No bias in this mode: the feed-forward removes the sag at the source, and
+    # subtracting as well would double-count it.
+    assert np.allclose(controller._bias, np.zeros(6))
+
+    # Once the arm carries the load the sag decays, and a settled arm holds still.
+    settled = controller.step(deflection_pose(), dt=0.03)
+    assert np.allclose(settled.twist, np.zeros(6), atol=1e-12)
+
+
+def test_capture_bias_does_not_send_the_arm_drifting_back_the_other_way():
+    """The double-count failure: FF lifts the load, a leftover bias would push up."""
+    cfg = config(linear_stiffness=100.0, force_deadband=1.0, linear_admittance=0.01)
+    controller = AdmittanceHandGuide(cfg)
+    controller.engage(Pose([0.5, 0.0, 0.4]))
+    start = controller.setpoint.position.copy()
+
+    payload = deflection_pose(position=(0.0, 0.0, -0.05))
+    controller.capture_bias(controller.step(payload, dt=0.03).operator_wrench)
+
+    # The feed-forward has taken effect, so the tool now sits on the setpoint.
+    for _ in range(100):
+        controller.step(deflection_pose(), dt=0.03)
+    assert controller.setpoint.position[2] <= start[2] + 1e-9
+
+
+def test_measured_mode_zeroes_the_payload_as_a_bias_instead():
+    """A feed-forward cannot remove a load from the wrench estimate; a bias can."""
+    cfg = config(wrench_source="measured", force_deadband=1.0, linear_admittance=0.01)
+    controller = AdmittanceHandGuide(cfg)
+    controller.engage(Pose([0.5, 0.0, 0.4]))
+
+    payload = np.array([0.0, 0.0, -5.0, 0.0, 0.0, 0.0])
+    controller.capture_bias(payload)
+    assert np.allclose(controller.feed_forward, np.zeros(6))
+
+    held = controller.step(deflection_pose(), dt=0.03, measured_wrench=payload)
+    assert np.allclose(held.twist, np.zeros(6), atol=1e-12)
 
 
 # -- wrench source ----------------------------------------------------------

@@ -59,21 +59,21 @@ from typing import Optional
 
 import numpy as np
 
-# Boston Dynamics' own impedance example runs at stiffness [500,500,500,60,60,60]
-# with damping [2.5,2.5,2.5,1,1,1]. Those are the only published values known to
-# be stable on this arm, so they anchor the defaults below rather than a textbook
-# critical-damping calculation: the impedance controller already contributes
-# damping of its own, and the diagonal term here adds to it.
-BD_REFERENCE_STIFFNESS = (500.0, 500.0, 500.0, 60.0, 60.0, 60.0)
-BD_REFERENCE_DAMPING = (2.5, 2.5, 2.5, 1.0, 1.0, 1.0)
-
-# Hard ceilings, applied to whatever the config or CLI asks for. Above these the
-# arm is documented to go unstable, and an unstable arm with a human holding it
-# is the failure this whole module exists to avoid.
+# Hard ceilings, applied to whatever the config or CLI asks for. An unstable arm
+# with a human holding it is the failure this whole module exists to avoid, so
+# these are not advisory.
+#
+# The stiffness ceilings are the values Boston Dynamics' own impedance example
+# runs at -- the only published operating point known to be stable on this arm,
+# and the reason the defaults below are set as a fraction of them rather than
+# from a textbook critical-damping calculation. Spot's impedance controller
+# contributes damping of its own and the diagonal term here adds to it, so more
+# damping is not automatically more stable: the API's advice for an instability
+# is to lower stiffness, or to lower stiffness *and* damping together.
 MAX_LINEAR_STIFFNESS = 500.0  # N/m
 MAX_ANGULAR_STIFFNESS = 60.0  # Nm/rad
-MAX_LINEAR_DAMPING = 10.0  # Ns/m
-MAX_ANGULAR_DAMPING = 2.0  # Nms/rad
+MAX_LINEAR_DAMPING = 10.0  # Ns/m, ~4x the example's 2.5
+MAX_ANGULAR_DAMPING = 2.0  # Nms/rad, ~2x the example's 1.0
 
 
 # -- quaternion and pose helpers -------------------------------------------
@@ -444,14 +444,29 @@ class AdmittanceHandGuide:
     def capture_bias(self, wrench: np.ndarray) -> np.ndarray:
         """Record the resting wrench as the zero point. Call with nobody touching.
 
-        A payload in the gripper pulls down forever, which the loop would read as
-        a permanent downward push and act on. Capturing it here both subtracts it
-        from the operator wrench and feeds it forward to Spot, so the spring stops
-        having to hold the payload against a standing deflection.
+        A payload in the gripper pulls forever, which the loop would otherwise
+        read as a permanent push and act on. The two wrench sources need opposite
+        corrections for it, and applying both would double-count:
+
+        * `deflection` -- the payload shows up as a standing sag, so hand its
+          weight to the arm as a feed-forward. The sag itself then returns to
+          zero and there is nothing left to subtract. Subtracting a bias as well
+          would leave the loop reading a phantom push once the sag had gone, and
+          send the arm drifting the other way.
+        * `measured` -- the payload rides in the wrench estimate, which a
+          feed-forward does not remove: the arm still reports the force it is
+          exerting to hold the load. So here it is the bias that has to go.
+
+        Returns the captured wrench either way.
         """
-        self._bias = np.asarray(wrench, dtype=float).reshape(6).copy()
-        self._feed_forward = -self._bias
-        return self._bias
+        wrench = np.asarray(wrench, dtype=float).reshape(6).copy()
+        if self.config.wrench_source == "deflection":
+            self._bias = np.zeros(6)
+            self._feed_forward = -wrench
+        else:
+            self._bias = wrench
+            self._feed_forward = np.zeros(6)
+        return wrench
 
     # -- the control law ----------------------------------------------------
 

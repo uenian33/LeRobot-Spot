@@ -132,11 +132,23 @@ class HandGuideInterface:
 
     # -- engage / disengage -------------------------------------------------
 
-    def _toggle_engage(self) -> None:
+    def _debounced(self, name: str) -> bool:
+        """True if this press should be swallowed as key auto-repeat.
+
+        The "never pressed" sentinel is None, not 0.0: `time.monotonic()` is
+        process-relative on some platforms, so a zero default eats the first
+        press of the session.
+        """
         now = time.monotonic()
-        if now - self._last_key_time.get("engage", 0.0) < DEBOUNCE_SECONDS:
+        last = self._last_key_time.get(name)
+        if last is not None and now - last < DEBOUNCE_SECONDS:
+            return True
+        self._last_key_time[name] = now
+        return False
+
+    def _toggle_engage(self) -> None:
+        if self._debounced("engage"):
             return
-        self._last_key_time["engage"] = now
         if self.engaged:
             self.disengage("clutch released")
         else:
@@ -210,11 +222,8 @@ class HandGuideInterface:
     # -- recording ----------------------------------------------------------
 
     def _toggle_recording(self) -> None:
-        now = time.monotonic()
-        if now - self._last_key_time.get("record", 0.0) < DEBOUNCE_SECONDS:
+        if self._debounced("record"):
             return
-        self._last_key_time["record"] = now
-
         if self.recorder.recording:
             summary = self.recorder.stop(keep=True, task=self.task)
             self._last_summary = (

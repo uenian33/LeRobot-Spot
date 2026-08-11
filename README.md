@@ -1,12 +1,16 @@
 # LeRobot-Spot
 
 Teleoperate a Boston Dynamics Spot arm from a LeRobot SO-101 (or SO-100) leader
-arm, in either **position** or **velocity** control.
+arm, in either **position** or **velocity** control — and collect imitation-learning
+demonstrations by **hand-guiding** the arm directly.
 
 ```
 SO-101 leader  ──►  retarget  ──►  Spot arm
  Feetech bus       joint map or      ArmJointMoveCommand   (position mode)
  6 servos          twist map         ArmVelocityCommand    (velocity mode)
+
+your hand      ──►  admittance ──►  Spot arm
+ on the gripper    deflection→v      ArmImpedanceCommand   (hand-guide mode)
 ```
 
 ## Why joint-space works here
@@ -180,6 +184,154 @@ real stop button.
 **The software E-Stop is not a substitute for the hardware E-Stop.** Keep the
 tablet or a hardware estop within reach.
 
+## Hand-guided demonstration collection
+
+```bash
+python -m lerobot_spot.collect ROBOT_IP --output ~/demos/pick-cup --task "pick up the cup"
+```
+
+Grab the gripper, drag it through the task in all six degrees of freedom, and
+press `R` to bracket each take. This is the Franka Panda kinesthetic-teaching
+workflow, reached a different way.
+
+### Why it is not the same thing a Panda does
+
+A Panda has joint torque sensors and a backdrivable transmission, so it can null
+out its own gravity and friction and go limp under your hand. **Spot cannot.**
+Its arm is not backdrivable and the SDK exposes no joint torque interface, so
+"go limp" is not a command that exists on this robot.
+
+What Spot does expose is `ArmImpedanceCommand`: a virtual 6-DOF spring-damper
+between a *desired tool* frame you stream and the *tool* frame the arm reaches.
+That alone is not hand-guiding — push the arm and it springs straight back,
+because the setpoint never moved. So `handguide.py` closes an outer **admittance**
+loop around it:
+
+```
+you push  →  tool deflects from the setpoint
+          →  deflection read back from impedance feedback
+          →  deflection drives the setpoint in the push direction
+          →  arm follows the setpoint, i.e. follows your hand
+```
+
+Let go and the deflection decays to zero, so the setpoint stops on its own. That
+self-termination is the property that makes the loop safe: nothing keeps
+integrating once you stop pushing.
+
+Practically, expect it to feel like dragging something through honey rather than
+moving a weightless Panda. Friction in Spot's harmonic drives is real and this
+loop does not cancel it — it works around it. Below `--force-deadband` newtons of
+push, nothing moves at all.
+
+### Where the push signal comes from
+
+`--wrench-source deflection` (default) infers your push from
+`desired_tool_tform_tool` times the stiffness matrix — the same quantity the
+robot computes internally, and exact forward kinematics with nothing estimated.
+
+`--wrench-source measured` uses Spot's own wrench estimate, derived from joint
+currents. Truer to real contact force, but biased by payload and friction, so it
+needs `b` and will still drift as the arm's pose changes. It is also the mode in
+which the leash actually matters — see below.
+
+### Keys
+
+| Key | Action |
+| --- | --- |
+| `e` | engage / disengage hand-guiding |
+| `R` | start / stop a take |
+| `D` | discard the take in progress |
+| `f` | freeze the setpoint — let go and reposition without drift |
+| `b` | zero the loop against a payload (let go of the arm first) |
+| `o` / `p` | gripper open / close |
+| `[` `]` | scale the admittance gains live |
+| `ESC` | stop, disengage, and save the take |
+
+The stand/sit/power/lease/E-Stop keys are the same as teleop.
+
+### Carrying something
+
+A payload in the gripper pulls down forever, which the loop reads as a permanent
+downward push and acts on — the arm sinks. Let go of the arm and press `b`.
+
+What that does depends on the wrench source, because the two need opposite
+corrections. In `deflection` mode the payload shows up as a standing sag, so its
+weight is handed to Spot as a feed-forward wrench and the sag itself goes away.
+In `measured` mode a feed-forward would not help — the arm still reports the
+force it exerts to hold the load — so the resting wrench is subtracted as a bias
+instead. Applying both would double-count the load and drift the arm upward.
+
+### Safety
+
+Read the teleop safety section first; all of it still applies. What is different
+here is that **you are inside the workspace with your hands on the arm**, which
+teleop never asks of you. On top of the usual watchdogs:
+
+- **The leash.** The setpoint is never allowed further than `--max-deflection`
+  from the tool the arm actually reached, which bounds the spring force at
+  `linear_stiffness × max_deflection` — 15 N at the defaults. This is the single
+  most important number in the config.
+- **`max_force_mag` / `max_torque_mag`** are sent with every command, so the
+  robot saturates its own output at 30 N / 8 Nm, below the API's 60 N / 15 Nm
+  defaults. Independent of the leash, on purpose.
+- **The workspace box** clamps the setpoint into a body-relative box and a reach
+  annulus, so it cannot be dragged past where the arm can follow. The defaults
+  are conservative guesses — **tune them for your workspace before trusting them.**
+- **Instability detection.** If the arm reports `STATUS_TRAJECTORY_CANCELLED` it
+  has detected its own instability; the loop disengages and tells you to lower
+  the stiffness. Re-engaging at the same stiffness will just repeat it.
+- Engaging seeds the setpoint at the arm's current pose, so it can never jump —
+  it is safe to engage with your hands already on the gripper.
+
+Disengaging does *not* cut the command. It leaves the spring holding the arm
+where you left it, which is a still, compliant, still-powered state — not a
+limp one. `ESC` is the real stop.
+
+Bring the arm up on `--dry-run` first and watch the push and deflection readouts
+respond to your hand before you let it drive anything.
+
+### Tuning
+
+| Flag / key | Default | Effect |
+| --- | --- | --- |
+| `--linear-stiffness` | `150` N/m | lower is easier to push, and sags more |
+| `--angular-stiffness` | `12` Nm/rad | as above, for rotation |
+| `--linear-damping` | `3.0` Ns/m | raise if the arm feels bouncy |
+| `--force-deadband` | `3.0` N | push needed before anything moves |
+| `--linear-admittance` | `0.010` (m/s)/N | how fast a given push drags the arm |
+| `--linear-speed-limit` | `0.15` m/s | ceiling on setpoint speed |
+| `--max-deflection` | `0.10` m | the leash |
+| `velocity_cutoff_hz` | `2.0` | the "virtual inertia" knob; lower is heavier |
+| `--tool-offset` | `0.196 0 0` | put this where your hand actually grips |
+
+Stiffness and damping are clamped into the envelope Boston Dynamics' own
+impedance example runs in (≤500 N/m, ≤60 Nm/rad); above that the arm is
+documented to go unstable. If it oscillates, lower stiffness first, then lower
+both. If it feels sluggish, raise `--linear-admittance` with `]` rather than
+touching the spring.
+
+`--tool-offset` matters more than it looks: it is the point the virtual spring
+pulls on. Put it where your hand actually is and rotations will feel natural;
+leave it wrong and the arm will fight you when you twist.
+
+### What gets recorded
+
+One directory per take, holding a `samples.jsonl` written tick by tick (the
+crash-proof copy) and a `samples.npz` written at the end (the trainable one).
+`recorder.load_episode()` reads either back as a dict of `(ticks, …)` arrays.
+
+Per tick: joint position / velocity / load (6 each, in `SPOT_JOINTS` order);
+hand pose in odom, vision and body (7 each, `xyz` + `wxyz`); hand twist in odom
+and vision (6 each); body pose in odom and vision; Spot's estimated end-effector
+force and wrench; gripper opening, command and holding flag; the impedance
+setpoint, the deflection, the inferred operator wrench, the commanded setpoint
+twist, the commanded and measured tool wrenches, the live stiffness/damping/
+feed-forward, and the impedance status plus the engaged / frozen / leashed /
+clamped flags.
+
+Discarded takes are deleted outright and their index is reused, so a session
+directory holds only takes you kept.
+
 ## Tuning
 
 Everything below lives in a JSON config (`--config`); see
@@ -207,10 +359,15 @@ then write the number into the config.
 python -m pytest tests/ -q
 ```
 
-71 tests, no robot and no leader arm required. The retargeting tests are pure
-maths; the teleop tests drive the state machine — engage gating, the watchdogs,
-the home-anchor alignment gate, and the shape of the commands that reach the wire
-— against `tests/fake_bosdyn/`, a stub used only when the real SDK is absent.
+153 tests, no robot and no leader arm required. The retargeting and hand-guiding
+tests are pure maths — `test_handguide.py` pins the safety properties directly
+(engaging never moves the arm, releasing stops the setpoint, the leash bounds the
+spring force) and runs against the real SDK too. The teleop and collect tests
+drive their state machines — engage gating, the watchdogs, the home-anchor
+alignment gate, and the shape of the commands that reach the wire — against
+`tests/fake_bosdyn/`, a stub used only when the real SDK is absent. Those two
+modules skip when the real SDK is installed, because their fake robot handle is
+not one the real lease client accepts.
 
 ## Layout
 
@@ -218,8 +375,11 @@ the home-anchor alignment gate, and the shape of the commands that reach the wir
 lerobot_spot/
   leader.py     threaded reader for the SO-101, tolerant of LeRobot's module moves
   retarget.py   joint map, twist map, filters, limits, the two anchors
-  spot_arm.py   lease / E-Stop / power / state, and the two command paths
-  teleop.py     control loop, curses UI, CLI
+  handguide.py  admittance law, SE(3) helpers, the leash and workspace clamps
+  recorder.py   episode writer (streaming jsonl + trainable npz) and loader
+  spot_arm.py   lease / E-Stop / power / state, and the three command paths
+  teleop.py     leader-driven control loop, curses UI, CLI
+  collect.py    hand-guided control loop, curses UI, CLI
 scripts/
   check_leader.py   leader-only sanity check, no robot
 configs/
@@ -237,3 +397,14 @@ configs/
   joint inside its own range.
 - `--clutch hold` depends on terminal key-repeat, which macOS can have disabled.
   Verify it engages and releases as you expect before relying on it.
+- Hand-guiding does not cancel the arm's friction, only work around it. Fine
+  positioning below roughly the `--force-deadband` threshold is not achievable by
+  hand; use teleop for that.
+- The hand-guide loop spends two RPCs per tick (command + feedback). If the
+  measured rate in the header falls well below `--rate`, lower `--rate` — the
+  admittance law is written to be correct at any rate, but a laggy loop feels
+  worse than a slower one.
+- No camera frames are recorded. The episodes hold proprioception and wrench
+  only; pair them with your own image capture if the policy needs pixels.
+- The workspace box and reach annulus defaults are guesses at Spot's geometry,
+  not surveyed values. Tune them before relying on them.

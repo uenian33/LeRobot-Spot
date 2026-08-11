@@ -3,3 +3,16 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 home.json
+
+# Recorded demonstrations. `collect.py --output` normally points outside the
+# repo, but a session dropped in here must never reach git history: episodes are
+# stacked float arrays and grow without bound.
+*.npz
+*.jsonl
+*.hdf5
+*.h5
+*.mp4
+demos/
+sessions/
+recordings/
+episode_*/

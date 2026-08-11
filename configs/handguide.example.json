@@ -1,0 +1,28 @@
+{
+  "linear_stiffness": 150.0,
+  "angular_stiffness": 12.0,
+  "linear_damping": 3.0,
+  "angular_damping": 0.4,
+
+  "max_force": 30.0,
+  "max_torque": 8.0,
+
+  "linear_admittance": 0.010,
+  "angular_admittance": 0.060,
+  "force_deadband": 3.0,
+  "torque_deadband": 0.5,
+  "linear_speed_limit": 0.15,
+  "angular_speed_limit": 0.60,
+  "velocity_cutoff_hz": 2.0,
+
+  "max_deflection": 0.10,
+  "max_deflection_angle": 0.50,
+
+  "box_min": [0.20, -0.60, -0.20],
+  "box_max": [0.90, 0.60, 0.70],
+  "shoulder_in_body": [0.292, 0.0, 0.188],
+  "min_radius": 0.30,
+  "max_radius": 0.90,
+
+  "wrench_source": "deflection"
+}
