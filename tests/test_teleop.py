@@ -412,8 +412,17 @@ def test_mode_switch_disengages(interface):
     interface._switch_mode()
     assert not interface.engaged
     assert interface.mode == "velocity"
-    interface._switch_mode()
-    assert interface.mode == "position"
+
+
+def test_mode_cycle_skips_cartesian_without_an_anchor(interface):
+    """Cycling into a mode that cannot engage is a dead end."""
+    assert interface.cartesian_retargeter is None
+    assert "cartesian" not in interface.available_modes()
+    seen = set()
+    for _ in range(6):
+        interface._switch_mode()
+        seen.add(interface.mode)
+    assert seen == {"position", "velocity"}
 
 
 def test_gain_scaling_applies_to_the_active_mode(interface):

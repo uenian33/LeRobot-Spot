@@ -33,13 +33,14 @@ from .retarget import (
     RetargetConfig,
     VelocityRetargeter,
 )
+from .cartesian import Anchor, CartesianConfig, CartesianRetargeter
 from .spot_arm import VELOCITY_CMD_DURATION, SpotArm, connect_robot
 
 LOGGER = logging.getLogger(__name__)
 
 RAD2DEG = 180.0 / 3.141592653589793
 
-MODES = ("position", "velocity")
+MODES = ("position", "velocity", "cartesian")
 
 # Terminal key auto-repeat turns a held key into a stream of presses. Keys that
 # toggle state have to ignore that stream or they flip-flop at the loop rate.
@@ -77,7 +78,8 @@ class ExitCheck:
 class TeleopInterface:
     """Curses front end and control loop."""
 
-    def __init__(self, robot, leader, config: RetargetConfig, options):
+    def __init__(self, robot, leader, config: RetargetConfig, options, anchor=None,
+                 cartesian_config=None):
         self.options = options
         self.config = config
         self.leader = leader
@@ -89,6 +91,14 @@ class TeleopInterface:
         self.anchor = options.anchor
         self.position_retargeter = PositionRetargeter(config)
         self.velocity_retargeter = VelocityRetargeter(config)
+        self.cartesian_retargeter = (
+            CartesianRetargeter(cartesian_config, anchor)
+            if anchor is not None
+            else None
+        )
+        self.pose_frame = options.pose_frame
+        self._last_pose = None
+        self._last_residual = None
 
         self.engaged = False
         self.gripper_enabled = not options.no_gripper
@@ -190,6 +200,16 @@ class TeleopInterface:
                 return False
             self.position_retargeter.engage(reading, spot_q, anchor=self.anchor)
             self._last_target = spot_q
+        elif self.mode == "cartesian":
+            if self.cartesian_retargeter is None:
+                self.add_message("Cannot engage: no anchor loaded (pass --anchor-file)")
+                return False
+            hand = self.spot.hand_pose(self.pose_frame)
+            if hand is None:
+                self.add_message("Cannot engage: hand pose unavailable")
+                return False
+            self.cartesian_retargeter.engage(hand)
+            self._last_pose = hand
         else:
             # Velocity mode is inherently relative: the leader is a joystick
             # whose centre is wherever it sits at engage, so the anchor choice
@@ -259,6 +279,9 @@ class TeleopInterface:
                     self.velocity_retargeter.zero_twist(), duration=VELOCITY_CMD_DURATION
                 )
             self._last_twist = self.velocity_retargeter.zero_twist()
+        elif self.mode == "cartesian":
+            if self.cartesian_retargeter is not None:
+                self.cartesian_retargeter.disengage()
         else:
             self.position_retargeter.disengage()
         self._last_reading_joints = None
@@ -299,9 +322,16 @@ class TeleopInterface:
         if self._exit_check is not None:
             self._exit_check.request_exit()
 
+    def available_modes(self) -> tuple:
+        """Cartesian needs an anchor; cycling into it without one is a dead end."""
+        if self.cartesian_retargeter is None:
+            return tuple(m for m in MODES if m != "cartesian")
+        return MODES
+
     def _switch_mode(self) -> None:
         self.disengage("mode switch")
-        self.mode = MODES[(MODES.index(self.mode) + 1) % len(MODES)]
+        modes = self.available_modes()
+        self.mode = modes[(modes.index(self.mode) + 1) % len(modes)]
         self.add_message(f"Mode -> {self.mode}")
 
     def _toggle_gripper(self) -> None:
@@ -309,6 +339,13 @@ class TeleopInterface:
         self.add_message(f"Gripper passthrough {'on' if self.gripper_enabled else 'off'}")
 
     def _scale_gain(self, factor: float) -> None:
+        if self.mode == "cartesian":
+            if self.cartesian_retargeter is not None:
+                self.cartesian_retargeter.config.position_scale *= factor
+                self.add_message(
+                    f"Position scale: {self.cartesian_retargeter.config.position_scale:.2f}x"
+                )
+            return
         if self.mode == "position":
             for link in self.config.joint_map.values():
                 link.gain *= factor
@@ -424,6 +461,17 @@ class TeleopInterface:
                     max_acc=self.options.max_joint_acc,
                     gripper_fraction=gripper,
                 )
+        elif self.mode == "cartesian":
+            pose = self.cartesian_retargeter.step(reading, dt)
+            self._last_pose = pose
+            self._last_residual = self.cartesian_retargeter.residual(reading)
+            if not self.dry_run:
+                self.spot.send_hand_pose(
+                    pose,
+                    frame_name=self.pose_frame,
+                    seconds=self.options.lookahead,
+                    gripper_fraction=gripper,
+                )
         else:
             twist = self.velocity_retargeter.step(reading)
             self._last_twist = twist
@@ -492,6 +540,19 @@ class TeleopInterface:
         elif self.mode == "velocity":
             twist_str = "  ".join(f"{axis}{self._last_twist[axis]:+6.2f}" for axis in self._last_twist)
             self._put(stdscr, row, 0, f"twist        {twist_str}")
+        elif self.mode == "cartesian":
+            hand = self.spot.hand_pose(self.pose_frame)
+            if hand is not None:
+                p = hand[:3, 3]
+                self._put(stdscr, row, 0,
+                          f"hand   (m)   x{p[0]:+7.3f} y{p[1]:+7.3f} z{p[2]:+7.3f}  [{self.pose_frame}]")
+            if self._last_residual is not None:
+                dp, dr = self._last_residual
+                scale = self.cartesian_retargeter.config.position_scale
+                self._put(stdscr, row + 1, 0,
+                          f"residual(m)  x{dp[0]:+7.3f} y{dp[1]:+7.3f} z{dp[2]:+7.3f}"
+                          f"  |{np.linalg.norm(dp):.3f}| x{scale:.1f} ->"
+                          f" {np.linalg.norm(dp) * scale:.3f}   rot {np.linalg.norm(dr) * RAD2DEG:5.1f} deg")
         row += 1
 
         # With the home anchor, show what engaging right now would cost, so the
@@ -569,6 +630,31 @@ def build_parser() -> argparse.ArgumentParser:
         "the joint you are watching.",
     )
     control_group.add_argument("--rate", type=float, default=30.0, help="Control loop rate, Hz")
+    control_group.add_argument(
+        "--anchor-file",
+        type=Path,
+        help="Anchor recorded by scripts/record_anchor.py. Required for --mode cartesian.",
+    )
+    control_group.add_argument(
+        "--position-scale",
+        type=float,
+        default=2.0,
+        help="Cartesian mode: leader metres to Spot metres. 2 means 10 cm of leader "
+        "travel moves Spot's hand 20 cm.",
+    )
+    control_group.add_argument(
+        "--rotation-scale",
+        type=float,
+        default=1.0,
+        help="Cartesian mode: leader radians to Spot radians. 1 is one-to-one.",
+    )
+    control_group.add_argument(
+        "--pose-frame",
+        default="flat_body",
+        choices=("flat_body", "body", "odom"),
+        help="Frame the commanded hand pose is expressed in. flat_body is gravity "
+        "aligned and moves with the robot; odom is fixed in the world.",
+    )
     control_group.add_argument("--config", type=Path, help="JSON file overriding the retargeting map")
     control_group.add_argument(
         "--save-home",
@@ -624,6 +710,29 @@ def main() -> bool:
         print("error: --leader-port is required (or pass --simulated-leader)", file=sys.stderr)
         return False
 
+    anchor = None
+    cartesian_config = CartesianConfig(
+        position_scale=options.position_scale, rotation_scale=options.rotation_scale
+    )
+    if options.anchor_file:
+        try:
+            anchor = Anchor.from_json(options.anchor_file)
+        except (OSError, ValueError) as err:
+            print(f"error: could not load anchor {options.anchor_file}: {err}", file=sys.stderr)
+            return False
+    if options.mode == "cartesian" and anchor is None:
+        print(
+            "error: --mode cartesian needs --anchor-file. Record one with:\n"
+            "  python scripts/record_anchor.py --leader-port PORT --leader-id ID",
+            file=sys.stderr,
+        )
+        return False
+    try:
+        cartesian_config.validate()
+    except ValueError as err:
+        print(f"error: {err}", file=sys.stderr)
+        return False
+
     config = RetargetConfig.from_json(options.config) if options.config else RetargetConfig()
     config.validate()
     config.max_joint_vel = options.max_joint_vel
@@ -664,7 +773,9 @@ def main() -> bool:
         return False
     leader.start()
 
-    interface = TeleopInterface(robot, leader, config, options)
+    interface = TeleopInterface(
+        robot, leader, config, options, anchor=anchor, cartesian_config=cartesian_config
+    )
     try:
         interface.start()
     except (ResponseError, RpcError) as err:

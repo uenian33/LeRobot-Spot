@@ -24,6 +24,7 @@ from bosdyn.client.estop import EstopClient, EstopEndpoint, EstopKeepAlive
 from bosdyn.client.frame_helpers import (
     BODY_FRAME_NAME,
     DESIRED_TOOL_FRAME_NAME,
+    GRAV_ALIGNED_BODY_FRAME_NAME,
     HAND_FRAME_NAME,
     ODOM_FRAME_NAME,
     TOOL_FRAME_NAME,
@@ -39,6 +40,7 @@ from bosdyn.client.robot_state import RobotStateClient
 from bosdyn.util import now_sec, seconds_to_duration
 
 from .handguide import Pose
+from .leader_kinematics import matrix_to_quaternion
 from .retarget import SPOT_JOINTS
 
 LOGGER = logging.getLogger(__name__)
@@ -582,6 +584,59 @@ class SpotArm:
             "commanded": wrench_to_array(feedback.total_commanded_wrench_at_tool_in_desired_tool),
             "measured": wrench_to_array(feedback.total_measured_wrench_at_tool_in_desired_tool),
         }
+
+    # -- Cartesian hand pose ------------------------------------------------
+
+    def hand_pose(self, frame_name: str = GRAV_ALIGNED_BODY_FRAME_NAME):
+        """Current hand pose as a 4x4 in `frame_name`, or None if unavailable."""
+        state = self.robot_state
+        if not state:
+            return None
+        transform = get_a_tform_b(
+            state.kinematic_state.transforms_snapshot, frame_name, HAND_FRAME_NAME
+        )
+        if transform is None:
+            return None
+        pose = np.eye(4)
+        pose[:3, 3] = [transform.position.x, transform.position.y, transform.position.z]
+        rotation = transform.rotation
+        w, x, y, z = rotation.w, rotation.x, rotation.y, rotation.z
+        pose[:3, :3] = np.array(
+            [
+                [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+            ]
+        )
+        return pose
+
+    def send_hand_pose(
+        self,
+        pose,
+        frame_name: str = GRAV_ALIGNED_BODY_FRAME_NAME,
+        seconds: float = 0.15,
+        gripper_fraction: Optional[float] = None,
+    ) -> None:
+        """Cartesian control: command the hand to a pose, Spot solving the IK.
+
+        `seconds` is the trajectory duration, replaced on every tick exactly as
+        the joint-move path does.
+        """
+        position = pose[:3, 3]
+        w, x, y, z = matrix_to_quaternion(pose[:3, :3])
+        command = RobotCommandBuilder.arm_pose_command(
+            float(position[0]),
+            float(position[1]),
+            float(position[2]),
+            float(w),
+            float(x),
+            float(y),
+            float(z),
+            frame_name,
+            seconds,
+        )
+        command = self._with_gripper(command, gripper_fraction)
+        self._send("arm_pose", command)
 
     def send_gripper(self, fraction: float) -> None:
         self._send("gripper", RobotCommandBuilder.claw_gripper_open_fraction_command(float(fraction)))
