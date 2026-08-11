@@ -94,6 +94,25 @@ def fake_state(power=MOTOR_POWER_ON, tool=TOOL_IN_ODOM):
     )
 
 
+class FakeStateTask:
+    """Replaces AsyncRobotState.
+
+    The real `AsyncPeriodicQuery.proto` is a read-only property, so tests cannot
+    assign to it; swapping the whole task out works against both SDKs.
+    """
+
+    def __init__(self, proto):
+        self.proto = proto
+
+    def update(self):
+        pass
+
+
+def set_state(interface, **kwargs):
+    """Install a fresh fake robot state on the interface."""
+    interface.spot._state_task = FakeStateTask(fake_state(**kwargs))
+
+
 class RecordingCommandClient:
     default_service_name = "robot-command"
 
@@ -162,7 +181,7 @@ def make_interface(tmp_path, *argv):
     robot = FakeRobot()
     interface = HandGuideInterface(robot, config, options)
     interface.start()
-    interface.spot._state_task.proto = fake_state()
+    set_state(interface)
     interface.client = robot.command_client
     interface.sent = robot.command_client.sent
     return interface
@@ -195,11 +214,11 @@ def test_engage_needs_a_lease(tmp_path):
 
 def test_engage_needs_motors_unless_dry_run(tmp_path):
     interface = make_interface(tmp_path)
-    interface.spot._state_task.proto = fake_state(power=MOTOR_POWER_OFF)
+    set_state(interface, power=MOTOR_POWER_OFF)
     assert not interface.engage()
 
     dry = make_interface(tmp_path / "dry", "--dry-run")
-    dry.spot._state_task.proto = fake_state(power=MOTOR_POWER_OFF)
+    set_state(dry, power=MOTOR_POWER_OFF)
     assert dry.engage()
 
 
@@ -251,7 +270,7 @@ def test_disengages_when_the_lease_is_lost(tmp_path):
 def test_disengages_when_motors_power_off(tmp_path):
     interface = make_interface(tmp_path)
     interface.engage()
-    interface.spot._state_task.proto = fake_state(power=MOTOR_POWER_OFF)
+    set_state(interface, power=MOTOR_POWER_OFF)
     interface._control_step(DT)
     assert not interface.engaged
 

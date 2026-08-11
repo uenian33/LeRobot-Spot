@@ -228,3 +228,71 @@ def test_clamped_targets_are_inside_the_urdf_range():
         for index, joint in enumerate(SPOT_JOINTS):
             urdf_low, urdf_high = URDF_LIMITS[joint]
             assert urdf_low <= clamped[index] <= urdf_high, f"{joint} escaped the URDF range"
+
+
+# -- known SDK defects ------------------------------------------------------
+
+
+def test_async_task_update_defect_is_detected_correctly():
+    """Our detector must agree with what this SDK version actually does."""
+    from bosdyn.client.async_tasks import AsyncGRPCTask
+
+    from lerobot_spot.bosdyn_compat import async_task_update_is_broken
+
+    detected = async_task_update_is_broken()
+
+    class Probe(AsyncGRPCTask):
+        def _start_query(self):
+            return None
+
+        def _should_query(self, now_sec):
+            return False
+
+        def _handle_result(self, result):
+            pass
+
+        def _handle_error(self, exception):
+            pass
+
+    probe = Probe()
+    probe._future = None
+    try:
+        probe.update()
+        actually_broken = False
+    except UnboundLocalError:
+        actually_broken = True
+
+    assert detected == actually_broken, (
+        "bosdyn_compat.async_task_update_is_broken() disagrees with this SDK. "
+        f"detector said {detected}, calling update() said {actually_broken}."
+    )
+
+
+def test_patch_repairs_the_defect_when_present():
+    from bosdyn.client.async_tasks import AsyncGRPCTask
+
+    from lerobot_spot.bosdyn_compat import _corrected_update
+
+    class Probe(AsyncGRPCTask):
+        def __init__(self):
+            self._future = None
+            self._last_call = 0.0
+            self.started = False
+
+        def _start_query(self):
+            self.started = True
+            return None
+
+        def _should_query(self, now_sec):
+            return True
+
+        def _handle_result(self, result):
+            pass
+
+        def _handle_error(self, exception):
+            pass
+
+    probe = Probe()
+    _corrected_update(probe)
+    assert probe.started, "the corrected update() never started a query"
+    assert probe._last_call > 0, "the corrected update() never stamped the clock"

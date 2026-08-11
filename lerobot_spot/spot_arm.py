@@ -36,7 +36,7 @@ from bosdyn.client.lease import LeaseClient, LeaseKeepAlive
 from bosdyn.client.power import PowerClient
 from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient
 from bosdyn.client.robot_state import RobotStateClient
-from bosdyn.util import seconds_to_duration
+from bosdyn.util import now_sec, seconds_to_duration
 
 from .handguide import Pose
 from .retarget import SPOT_JOINTS
@@ -111,13 +111,41 @@ def velocity_to_array(velocity) -> np.ndarray:
 
 
 class AsyncRobotState(AsyncPeriodicQuery):
-    """Poll robot state in the background."""
+    """Poll robot state in the background.
+
+    `update()` is reimplemented rather than inherited because bosdyn-client
+    5.1.0 through at least 5.1.9 ship a broken `AsyncGRPCTask.update`:
+
+        from bosdyn.util import now_sec   # module level
+        ...
+        def update(self):
+            now_sec = now_sec()           # assignment makes this a local
+
+    The assignment shadows the import, so the call raises `UnboundLocalError`
+    on every invocation and the whole class is unusable. 4.1.x and 5.0.x used
+    `time.time()` and are fine. `bosdyn.util.now_sec()` reads the same
+    unix-epoch clock, so the body below is correct on every version -- which
+    matters because the SDK on the robot laptop is not ours to choose.
+    """
 
     def __init__(self, robot_state_client, period_sec: float = 0.05):
         super().__init__("robot_state", robot_state_client, LOGGER, period_sec=period_sec)
 
     def _start_query(self):
         return self._client.get_robot_state_async()
+
+    def update(self):
+        now = now_sec()
+        if self._future is not None:
+            if self._future.original_future.done():
+                try:
+                    self._handle_result(self._future.result())
+                except (ResponseError, RpcError) as err:
+                    self._handle_error(err)
+                self._future = None
+        elif self._should_query(now):
+            self._last_call = now
+            self._future = self._start_query()
 
 
 class SpotArm:

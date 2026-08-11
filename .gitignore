@@ -16,3 +16,5 @@ demos/
 sessions/
 recordings/
 episode_*/
+*.npy
+manual_traj_records/

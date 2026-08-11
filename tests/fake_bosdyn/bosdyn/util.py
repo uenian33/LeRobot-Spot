@@ -18,3 +18,9 @@ def duration_str(d):
 def seconds_to_duration(seconds):
     whole = int(seconds)
     return Duration(seconds=whole, nanos=int((seconds - whole) * 1e9))
+
+
+def now_sec():
+    import time
+
+    return time.time()

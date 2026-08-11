@@ -427,6 +427,56 @@ def test_gripper_toggle(interface):
     assert not interface.gripper_enabled
 
 
+# -- state polling ----------------------------------------------------------
+#
+# bosdyn-client 5.1.0 through at least 5.1.9 ship an AsyncGRPCTask.update that
+# raises UnboundLocalError on every call (it does `now_sec = now_sec()`, which
+# shadows the module-level import). The whole suite missed it, because every
+# other test swaps the state task out for a fake. These run the real thing.
+
+
+class FakeFuture:
+    def __init__(self, result):
+        self._result = result
+        self.original_future = NS(done=lambda: True)
+
+    def result(self):
+        return self._result
+
+
+class FakeStateClient:
+    default_service_name = "robot-state"
+
+    def __init__(self):
+        self.calls = 0
+
+    def get_robot_state_async(self):
+        self.calls += 1
+        return FakeFuture(fake_state())
+
+
+def test_async_robot_state_update_does_not_raise():
+    """Guards against the bosdyn 5.1.x UnboundLocalError in update()."""
+    from lerobot_spot.spot_arm import AsyncRobotState
+
+    task = AsyncRobotState(FakeStateClient(), period_sec=0.0)
+    task.update()  # starts the query
+    task.update()  # collects the result
+
+
+def test_async_robot_state_actually_delivers_a_proto():
+    """A no-op update() would leave the UI and every watchdog blind."""
+    from lerobot_spot.spot_arm import AsyncRobotState
+
+    client = FakeStateClient()
+    task = AsyncRobotState(client, period_sec=0.0)
+    assert task.proto is None
+    task.update()
+    assert client.calls == 1, "update() never started a query"
+    task.update()
+    assert task.proto is not None, "update() never delivered a result"
+
+
 def sent_a_stop(interface) -> bool:
     """True if a stop command was issued, under either the real SDK or the stub."""
     for command in interface.sent:
