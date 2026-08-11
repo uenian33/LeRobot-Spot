@@ -230,12 +230,32 @@ def _deadband(value: float, width: float) -> float:
     return value - math.copysign(width, value)
 
 
-def clamp_to_limits(q: np.ndarray, margin: float = 0.0) -> np.ndarray:
-    """Clamp a Spot joint vector into its range of motion."""
+def clamp_to_limits(
+    q: np.ndarray, margin: float = 0.0, reference: Optional[np.ndarray] = None
+) -> np.ndarray:
+    """Clamp a Spot joint vector into its range of motion.
+
+    `margin` keeps a working distance from the hard stops, but a joint can
+    legitimately start outside it: the stow pose puts sh1 and el0 within about a
+    degree of their stops, well inside any useful margin. Naively clamping then
+    commands motion the instant you engage, with the leader held still -- the
+    margin causing exactly the surprise it exists to prevent.
+
+    `reference` (normally the pose at engage) widens the window per joint to
+    include where the arm already was. The margin can then stop the arm moving
+    further out, but never drags it in. The hard limits always apply.
+    """
     out = np.array(q, dtype=float)
     for index, name in enumerate(SPOT_JOINTS):
         low, high = SPOT_JOINT_LIMITS[name]
-        out[index] = min(max(out[index], low + margin), high - margin)
+        soft_low, soft_high = low + margin, high - margin
+        if reference is not None:
+            # Never demand a move the operator did not ask for.
+            soft_low = min(soft_low, reference[index])
+            soft_high = max(soft_high, reference[index])
+        out[index] = min(max(out[index], soft_low), soft_high)
+        # The published stops are absolute, whatever the reference was.
+        out[index] = min(max(out[index], low), high)
     return out
 
 
@@ -264,7 +284,7 @@ class PositionRetargeter:
             delta_deg = _deadband(reading.joints[name] - leader_ref[name], self.config.deadband_deg)
             index = SPOT_JOINTS.index(link.spot)
             target[index] += link.sign * link.gain * delta_deg * DEG2RAD
-        return clamp_to_limits(target, self.config.limit_margin_rad)
+        return clamp_to_limits(target, self.config.limit_margin_rad, reference=spot_ref)
 
     def alignment_error(self, reading: LeaderReading, spot_q: np.ndarray) -> np.ndarray:
         """Per-joint jump (rad) that engaging on the home anchor would introduce.

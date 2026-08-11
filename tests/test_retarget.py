@@ -371,3 +371,63 @@ def test_spot_limits_are_well_formed():
     for name, (low, high) in SPOT_JOINT_LIMITS.items():
         assert low < high, name
         assert abs(low) <= 2 * math.pi and abs(high) <= 2 * math.pi, name
+
+
+# -- the margin must never itself command motion ----------------------------
+#
+# The stow pose puts sh1 and el0 within about a degree of their hard stops, well
+# inside any useful margin. Engaging there once commanded 7-8 degrees of motion
+# with the leader held still.
+
+STOWED = np.array([0.0, -178.7, 179.7, 89.8, -0.1, -89.9]) * DEG2RAD
+
+
+def test_engaging_while_stowed_commands_no_motion():
+    cfg = RetargetConfig()
+    cfg.limit_margin_rad = 0.15  # as in configs/first_contact.json
+    retargeter = PositionRetargeter(cfg)
+    retargeter.engage(reading(), STOWED)
+    np.testing.assert_allclose(retargeter.step(reading(), DT), STOWED, atol=1e-9)
+
+
+def test_settling_from_the_stow_pose_stays_put_without_leader_motion():
+    cfg = RetargetConfig()
+    cfg.limit_margin_rad = 0.15
+    retargeter = PositionRetargeter(cfg)
+    retargeter.engage(reading(), STOWED)
+    np.testing.assert_allclose(settle(retargeter, reading()), STOWED, atol=1e-9)
+
+
+def test_a_joint_outside_the_margin_is_not_dragged_inward():
+    reference = np.array(STOWED)
+    clamped = clamp_to_limits(reference, margin=0.15, reference=reference)
+    np.testing.assert_allclose(clamped, reference, atol=1e-9)
+
+
+def test_without_a_reference_the_margin_still_applies():
+    """Plain clamping keeps its old behaviour for callers that want it."""
+    clamped = clamp_to_limits(STOWED, margin=0.15)
+    assert clamped[1] > STOWED[1], "sh1 should be pulled inside the margin"
+    assert clamped[2] < STOWED[2], "el0 should be pulled inside the margin"
+
+
+def test_hard_limits_still_win_over_the_reference():
+    """A reference cannot license a target beyond a published hard stop."""
+    reference = np.array(STOWED)
+    beyond = np.full(6, 1e4)
+    clamped = clamp_to_limits(beyond, margin=0.15, reference=reference)
+    for index, name in enumerate(SPOT_JOINTS):
+        low, high = SPOT_JOINT_LIMITS[name]
+        assert low <= clamped[index] <= high, name
+
+
+def test_motion_further_out_is_still_blocked_from_a_stowed_start():
+    """Driving sh1 harder toward its stop must not pass the hard limit."""
+    cfg = RetargetConfig()
+    cfg.limit_margin_rad = 0.15
+    cfg.joint_map["shoulder_lift"].gain = 5.0
+    retargeter = PositionRetargeter(cfg)
+    retargeter.engage(reading(), STOWED)
+    target = settle(retargeter, reading(shoulder_lift=-500.0), ticks=4000)
+    low, high = SPOT_JOINT_LIMITS["sh1"]
+    assert low <= target[1] <= high
