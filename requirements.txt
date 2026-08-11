@@ -1,6 +1,15 @@
-# Spot SDK. Match the major version to the robot's software release.
-bosdyn-client>=4.0.0
-bosdyn-api>=4.0.0
+# Spot SDK. Match this to the robot's software release, which `robot.get_id()`
+# reports without needing credentials. Two reasons it matters here:
+#
+#   * 5.1.0 through 5.1.9 ship a broken AsyncGRPCTask.update (it shadows
+#     now_sec, so every state poll raises UnboundLocalError). lerobot_spot works
+#     around it, but an unpatched script on those versions will not run.
+#   * tests/test_sdk_contract.py only proves command construction against the
+#     version it runs under. Re-run it after changing this pin.
+#
+# Verified against 5.0.1 (robot software 5.0.1) and 5.1.9.
+bosdyn-client==5.0.1
+bosdyn-api==5.0.1
 
 # LeRobot, for the SO-100/SO-101 leader arm on its Feetech bus.
 # The leader class has moved twice upstream; lerobot_spot.leader handles all

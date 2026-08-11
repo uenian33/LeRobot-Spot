@@ -603,3 +603,51 @@ def test_estop_state_is_read_from_the_robot_not_from_us():
     assert interface.spot.estop_released
     set_state(interface, estop=STATE_ESTOPPED)
     assert not interface.spot.estop_released
+
+
+# -- E-Stop ownership -------------------------------------------------------
+#
+# force_simple_setup() replaces the robot's whole E-Stop config with a single
+# endpoint, which unregisters the tablet and disables its red button. Defaulting
+# to 'leave' keeps that physical stop working.
+
+
+def test_estop_is_left_alone_by_default():
+    interface = make_interface("--dry-run")
+    assert interface.options.estop == "leave"
+    assert not interface.spot._take_estop
+    assert interface.spot._estop_endpoint is None, "must not register an endpoint"
+    assert not interface.spot.owns_estop
+
+
+def test_leaving_the_estop_never_reconfigures_the_robot(monkeypatch):
+    """A stray force_simple_setup() would silently kill the tablet's stop button."""
+    called = []
+
+    class Tripwire(FakeEstopEndpoint):
+        def force_simple_setup(self):
+            called.append(1)
+
+    import lerobot_spot.spot_arm as spot_arm
+
+    monkeypatch.setattr(spot_arm, "EstopEndpoint", Tripwire)
+    interface = make_interface("--dry-run")
+    interface.spot.toggle_estop()  # pressing SPACE must not take it either
+    assert called == [], "the E-Stop configuration was replaced despite --estop leave"
+
+
+def test_taking_the_estop_is_opt_in():
+    interface = make_interface("--dry-run", "--estop", "take")
+    assert interface.spot._take_estop
+    assert interface.spot._estop_endpoint is not None
+    interface.spot.toggle_estop()
+    assert interface.spot.owns_estop
+
+
+def test_estop_state_is_read_from_the_robot_not_from_us():
+    """With the tablet holding the E-Stop, our own keep-alive says nothing."""
+    interface = make_interface("--dry-run")
+    set_state(interface, estop=STATE_NOT_ESTOPPED)
+    assert interface.spot.estop_released
+    set_state(interface, estop=STATE_ESTOPPED)
+    assert not interface.spot.estop_released
