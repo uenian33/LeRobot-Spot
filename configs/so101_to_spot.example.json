@@ -1,0 +1,52 @@
+{
+  "_comment": [
+    "Retargeting map from an SO-101 leader arm to Spot's arm.",
+    "Copy this file, edit it, and pass it with --config.",
+    "Every key is optional: anything you leave out keeps its built-in default.",
+    "",
+    "joint_map  -- position mode. Each leader joint drives one Spot joint.",
+    "              sign flips the direction, gain scales leader degrees to Spot degrees.",
+    "              Spot's el1 (forearm roll) has no leader counterpart and is held",
+    "              at whatever it was when you engaged.",
+    "twist_map  -- velocity mode. Each leader joint drives one hand twist axis.",
+    "              span_deg is the leader displacement that saturates that axis.",
+    "              Linear axes are v_r / v_theta / v_z (normalized, cylindrical",
+    "              about the shoulder); angular are v_rx / v_ry / v_rz (rad/s, hand frame).",
+    "gripper    -- low/high are the leader trigger range that maps to fully",
+    "              closed / fully open. Set invert true if your trigger reads backwards.",
+    "leader_home / spot_home -- the correspondence pair used by --anchor home,",
+    "              normally captured with both arms stowed by pressing H in the",
+    "              teleop UI (with --save-home to write it here). Leader angles in",
+    "              degrees; Spot angles in radians, ordered sh0 sh1 el0 el1 wr0 wr1.",
+    "              Leave both null until captured -- they must be set together."
+  ],
+
+  "joint_map": {
+    "shoulder_pan":  {"spot": "sh0", "sign":  1.0, "gain": 1.0},
+    "shoulder_lift": {"spot": "sh1", "sign":  1.0, "gain": 1.0},
+    "elbow_flex":    {"spot": "el0", "sign":  1.0, "gain": 1.0},
+    "wrist_flex":    {"spot": "wr0", "sign":  1.0, "gain": 1.0},
+    "wrist_roll":    {"spot": "wr1", "sign":  1.0, "gain": 1.0}
+  },
+
+  "twist_map": {
+    "shoulder_pan":  {"axis": "v_theta", "sign":  1.0, "span_deg": 45.0},
+    "shoulder_lift": {"axis": "v_z",     "sign":  1.0, "span_deg": 45.0},
+    "elbow_flex":    {"axis": "v_r",     "sign": -1.0, "span_deg": 45.0},
+    "wrist_flex":    {"axis": "v_ry",    "sign":  1.0, "span_deg": 45.0},
+    "wrist_roll":    {"axis": "v_rx",    "sign":  1.0, "span_deg": 60.0}
+  },
+
+  "gripper": {"low": 0.0, "high": 100.0, "invert": false},
+
+  "leader_home": null,
+  "spot_home": null,
+  "home_tolerance_deg": 15.0,
+
+  "deadband_deg": 1.0,
+  "ema_alpha": 0.35,
+  "limit_margin_rad": 0.05,
+  "max_joint_vel": 1.5,
+  "linear_scale": 0.5,
+  "angular_scale": 1.0
+}

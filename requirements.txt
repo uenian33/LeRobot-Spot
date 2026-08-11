@@ -1,0 +1,13 @@
+# Spot SDK. Match the major version to the robot's software release.
+bosdyn-client>=4.0.0
+bosdyn-api>=4.0.0
+
+# LeRobot, for the SO-100/SO-101 leader arm on its Feetech bus.
+# The leader class has moved twice upstream; lerobot_spot.leader handles all
+# three module layouts, so any reasonably recent version works.
+lerobot[feetech]
+
+numpy>=1.24
+
+# Tests only.
+pytest>=7.0
