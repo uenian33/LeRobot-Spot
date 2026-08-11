@@ -151,17 +151,35 @@ class AsyncRobotState(AsyncPeriodicQuery):
 class SpotArm:
     """Everything this teleop rig needs from Spot."""
 
-    def __init__(self, robot, message_sink: Optional[Callable[[str], None]] = None):
+    def __init__(
+        self,
+        robot,
+        message_sink: Optional[Callable[[str], None]] = None,
+        take_estop: bool = False,
+    ):
+        """
+        take_estop: if True, become the robot's *sole* E-Stop endpoint. This is
+            what Boston Dynamics' own examples do, but it is worth being explicit
+            about the consequence: `force_simple_setup()` replaces the whole
+            E-Stop configuration with ours, which unregisters the tablet. The
+            tablet's red button stops working while we hold it. Leave this False
+            whenever a human is holding a tablet -- an independent physical stop
+            that our software cannot disable is worth more than the SPACE key.
+        """
         self._robot = robot
         self._message_sink = message_sink or (lambda msg: LOGGER.info(msg))
+        self._take_estop = take_estop
 
         self._lease_client = robot.ensure_client(LeaseClient.default_service_name)
-        try:
-            self._estop_client = robot.ensure_client(EstopClient.default_service_name)
-            self._estop_endpoint = EstopEndpoint(self._estop_client, "LeRobotSpotTeleop", 9.0)
-        except Exception:  # noqa: BLE001 - another endpoint owns the E-Stop
-            self._estop_client = None
-            self._estop_endpoint = None
+        self._estop_client = None
+        self._estop_endpoint = None
+        if take_estop:
+            try:
+                self._estop_client = robot.ensure_client(EstopClient.default_service_name)
+                self._estop_endpoint = EstopEndpoint(self._estop_client, "LeRobotSpotTeleop", 9.0)
+            except Exception:  # noqa: BLE001 - another endpoint owns the E-Stop
+                self._estop_client = None
+                self._estop_endpoint = None
         self._power_client = robot.ensure_client(PowerClient.default_service_name)
         self._robot_state_client = robot.ensure_client(RobotStateClient.default_service_name)
         self._command_client = robot.ensure_client(RobotCommandClient.default_service_name)
@@ -198,6 +216,11 @@ class SpotArm:
 
     def toggle_estop(self) -> None:
         """Release the software E-Stop, or re-assert it. Starts asserted."""
+        if not self._take_estop:
+            self._message(
+                "E-Stop is owned by another endpoint (the tablet). Release it there."
+            )
+            return
         if self._estop_client is None or self._estop_endpoint is None:
             self._message("No software E-Stop endpoint available")
             return
@@ -243,8 +266,23 @@ class SpotArm:
         return self._lease_keepalive is not None and self._lease_keepalive.is_alive()
 
     @property
+    def owns_estop(self) -> bool:
+        return self._take_estop and self._estop_keepalive is not None
+
+    @property
     def estop_released(self) -> bool:
-        return self._estop_keepalive is not None
+        """The robot's actual software E-Stop state, whoever is holding it.
+
+        Read from robot state rather than from our own keep-alive, so this stays
+        truthful when the tablet owns the E-Stop and we are only a client.
+        """
+        state = self.robot_state
+        if not state:
+            return False
+        for estop_state in state.estop_states:
+            if estop_state.type == estop_state.TYPE_SOFTWARE:
+                return estop_state.state == estop_state.STATE_NOT_ESTOPPED
+        return False
 
     # -- canned postures ----------------------------------------------------
 

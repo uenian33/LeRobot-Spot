@@ -93,8 +93,9 @@ Credentials come from the Spot SDK's usual `BOSDYN_CLIENT_USERNAME` /
 
 ## First contact with a powered arm
 
-Spot sitting, arm unstowed, open space, **hardware E-Stop in your hand**. Take
-one joint at a time:
+Spot sitting, arm unstowed, open space, **tablet in someone's hand with the
+E-Stop under their thumb**. Leave `--estop` at its default so that button keeps
+working. Take one joint at a time:
 
 ```bash
 python -m lerobot_spot.teleop $SPOT_IP --leader-port /dev/tty.usbmodem59700725491 \
@@ -219,8 +220,23 @@ The default `--clutch toggle` is less elegant but disengages the instant you
 press the key, which is why it is the default. Whichever you pick, `ESC` is the
 real stop button.
 
-**The software E-Stop is not a substitute for the hardware E-Stop.** Keep the
-tablet or a hardware estop within reach.
+### Who owns the E-Stop
+
+`--estop leave` is the default, and it matters more than anything else on this
+page. Boston Dynamics' examples call `EstopEndpoint.force_simple_setup()`, which
+*replaces the robot's entire E-Stop configuration with a single endpoint* -- the
+script's own. That unregisters the tablet, so **the tablet's red button stops
+working** for as long as the script runs. A tool that has never driven a real arm
+should not be the only thing that can stop it.
+
+With `leave` we register no endpoint at all: the tablet keeps E-Stop authority
+and someone else must release the E-Stop before the motors will power. `SPACE`
+does nothing but say so. The status line shows `(tablet)` or `(ours)` so there is
+never any doubt, and the released/asserted state is read from the robot rather
+than from our own keep-alive, so it stays truthful either way.
+
+Use `--estop take` only when nobody is holding a tablet. Then `SPACE` is your
+only software stop and the endpoint's 9-second timeout is your only backstop.
 
 ## Hand-guided demonstration collection
 

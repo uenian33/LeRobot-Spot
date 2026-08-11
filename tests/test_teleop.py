@@ -29,13 +29,19 @@ needs_fake_sdk = pytest.mark.skipif(not USING_FAKE_SDK, reason="requires tests/f
 MOTOR_POWER_OFF = 1
 MOTOR_POWER_ON = 2
 
+TYPE_SOFTWARE = 2
+STATE_ESTOPPED = 1
+STATE_NOT_ESTOPPED = 2
 
-def fake_state(q=SPOT_Q, power=MOTOR_POWER_ON):
+
+def fake_state(q=SPOT_Q, power=MOTOR_POWER_ON, estop=STATE_NOT_ESTOPPED):
     joint_states = [NS(name=f"arm0.{n}", position=NS(value=v)) for n, v in zip(SPOT_JOINTS, q)]
     joint_states.append(NS(name="fl.hx", position=NS(value=0.0)))  # a leg joint, to be ignored
     return NS(
         kinematic_state=NS(joint_states=joint_states),
         power_state=NS(motor_power_state=power),
+        estop_states=[NS(type=TYPE_SOFTWARE, state=estop, TYPE_SOFTWARE=TYPE_SOFTWARE,
+                        STATE_NOT_ESTOPPED=STATE_NOT_ESTOPPED)],
         battery_states=[NS(charge_percentage=NS(value=87.0), estimated_runtime=NS(seconds=3600))],
     )
 
@@ -549,3 +555,51 @@ def test_disengage_zeroes_the_hand_velocity_on_the_wire():
     request = interface.sent[-1].synchronized_command.arm_command.arm_velocity_command._v
     assert request.cylindrical_velocity.linear_velocity.r == 0.0
     assert request.angular_velocity_of_hand_rt_odom_in_hand.x == 0.0
+
+
+# -- E-Stop ownership -------------------------------------------------------
+#
+# force_simple_setup() replaces the robot's whole E-Stop config with a single
+# endpoint, which unregisters the tablet and disables its red button. Defaulting
+# to 'leave' keeps that physical stop working.
+
+
+def test_estop_is_left_alone_by_default():
+    interface = make_interface("--dry-run")
+    assert interface.options.estop == "leave"
+    assert not interface.spot._take_estop
+    assert interface.spot._estop_endpoint is None, "must not register an endpoint"
+    assert not interface.spot.owns_estop
+
+
+def test_leaving_the_estop_never_reconfigures_the_robot(monkeypatch):
+    """A stray force_simple_setup() would silently kill the tablet's stop button."""
+    called = []
+
+    class Tripwire(FakeEstopEndpoint):
+        def force_simple_setup(self):
+            called.append(1)
+
+    import lerobot_spot.spot_arm as spot_arm
+
+    monkeypatch.setattr(spot_arm, "EstopEndpoint", Tripwire)
+    interface = make_interface("--dry-run")
+    interface.spot.toggle_estop()  # pressing SPACE must not take it either
+    assert called == [], "the E-Stop configuration was replaced despite --estop leave"
+
+
+def test_taking_the_estop_is_opt_in():
+    interface = make_interface("--dry-run", "--estop", "take")
+    assert interface.spot._take_estop
+    assert interface.spot._estop_endpoint is not None
+    interface.spot.toggle_estop()
+    assert interface.spot.owns_estop
+
+
+def test_estop_state_is_read_from_the_robot_not_from_us():
+    """With the tablet holding the E-Stop, our own keep-alive says nothing."""
+    interface = make_interface("--dry-run")
+    set_state(interface, estop=STATE_NOT_ESTOPPED)
+    assert interface.spot.estop_released
+    set_state(interface, estop=STATE_ESTOPPED)
+    assert not interface.spot.estop_released

@@ -1607,9 +1607,10 @@ class IntegratedArmControl:
 
     # ========== Trajectory Replay ==========
     
-    # Hardcoded demonstration path for replay
-    DEMO_REPLAY_PATH = "manual_traj_records/demo_20260126_144927"  # <-- Change this to your demo folder
-    
+    # Demonstration to replay with [X]. Override with --demo-path. A relative
+    # path is resolved against this file's directory, not the shell's cwd.
+    DEMO_REPLAY_PATH = "manual_traj_records/demo_20260811_152015"
+
     def _replay_demonstration(self):
         """Load and replay a saved demonstration trajectory."""
         if self.manual_mode:
@@ -1620,8 +1621,8 @@ class IntegratedArmControl:
             print("ERROR: Please press 'c' to stand and initialize arm first!")
             return
         
-        demo_path = self.DEMO_REPLAY_PATH
-        
+        demo_path = str(Path(__file__).resolve().parent / self.DEMO_REPLAY_PATH)
+
         print("\n" + "="*80)
         print("REPLAY DEMONSTRATION")
         print(f"Loading from: {demo_path}")
@@ -1630,7 +1631,7 @@ class IntegratedArmControl:
         # Check if path exists
         if not os.path.exists(demo_path):
             print(f"ERROR: Path does not exist: {demo_path}")
-            print("Please update DEMO_REPLAY_PATH in the code.")
+            print("Pass --demo-path, or update DEMO_REPLAY_PATH in the code.")
             return
         
         # Load arm trajectory
@@ -2000,6 +2001,11 @@ def main():
         help='Time-sync update interval (seconds)',
         type=float
     )
+    parser.add_argument(
+        '--demo-path',
+        help='Demonstration directory replayed by [X] (default: %(default)s)',
+        default=IntegratedArmControl.DEMO_REPLAY_PATH
+    )
     options = parser.parse_args()
 
     # Setup logging to print to console
@@ -2023,7 +2029,8 @@ def main():
     assert robot.has_arm(), 'Robot requires an arm to run this example.'
 
     arm_control = IntegratedArmControl(robot)
-    
+    arm_control.DEMO_REPLAY_PATH = options.demo_path
+
     try:
         try:
             arm_control.start()

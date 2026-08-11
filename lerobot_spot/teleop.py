@@ -81,7 +81,9 @@ class TeleopInterface:
         self.options = options
         self.config = config
         self.leader = leader
-        self.spot = SpotArm(robot, message_sink=self.add_message)
+        self.spot = SpotArm(
+            robot, message_sink=self.add_message, take_estop=(options.estop == "take")
+        )
 
         self.mode = options.mode
         self.anchor = options.anchor
@@ -451,7 +453,8 @@ class TeleopInterface:
             1,
             0,
             f"Lease {'HELD' if self.spot.has_lease else 'RELEASED':<9s} "
-            f"Estop {'RELEASED' if self.spot.estop_released else 'ASSERTED':<9s} "
+            f"Estop {'RELEASED' if self.spot.estop_released else 'ASSERTED':<9s}"
+            f"{'(ours)' if self.spot.owns_estop else '(tablet)':<9s} "
             f"{self._power_str():<12s} {self._measured_hz:5.1f} Hz",
         )
 
@@ -580,6 +583,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     safety_group = parser.add_argument_group("safety")
+    safety_group.add_argument(
+        "--estop",
+        choices=("leave", "take"),
+        default="leave",
+        help="'leave' (default): another endpoint keeps the E-Stop, so the tablet's red "
+        "button still works and someone else must release the E-Stop before the motors "
+        "will power. 'take': become the robot's sole E-Stop endpoint, which unregisters "
+        "the tablet and makes SPACE the only software stop. Only use 'take' when nobody "
+        "is holding a tablet.",
+    )
     safety_group.add_argument("--clutch", choices=("toggle", "hold"), default="toggle")
     safety_group.add_argument(
         "--hold-timeout",

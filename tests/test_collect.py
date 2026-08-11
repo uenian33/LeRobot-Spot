@@ -31,6 +31,10 @@ pytestmark = needs_fake_sdk
 
 MOTOR_POWER_OFF = 1
 MOTOR_POWER_ON = 2
+
+TYPE_SOFTWARE = 2
+STATE_ESTOPPED = 1
+STATE_NOT_ESTOPPED = 2
 DT = 1.0 / 30.0
 
 TOOL_IN_ODOM = Pose([1.0, 0.5, 0.4], quat_from_rotvec([0.0, 0.0, 0.3]))
@@ -54,7 +58,7 @@ class FakeSnapshot:
         )
 
 
-def fake_state(power=MOTOR_POWER_ON, tool=TOOL_IN_ODOM):
+def fake_state(power=MOTOR_POWER_ON, tool=TOOL_IN_ODOM, estop=STATE_NOT_ESTOPPED):
     joint_states = [
         NS(name=f"arm0.{n}", position=NS(value=0.1 * i), velocity=NS(value=0.01 * i),
            load=NS(value=0.5 * i))
@@ -82,6 +86,8 @@ def fake_state(power=MOTOR_POWER_ON, tool=TOOL_IN_ODOM):
     return NS(
         kinematic_state=NS(joint_states=joint_states, transforms_snapshot=FakeSnapshot(transforms)),
         power_state=NS(motor_power_state=power),
+        estop_states=[NS(type=TYPE_SOFTWARE, state=estop, TYPE_SOFTWARE=TYPE_SOFTWARE,
+                        STATE_NOT_ESTOPPED=STATE_NOT_ESTOPPED)],
         battery_states=[NS(charge_percentage=NS(value=87.0), estimated_runtime=NS(seconds=3600))],
         manipulator_state=NS(
             gripper_open_percentage=42.0,
